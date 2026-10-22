@@ -469,48 +469,68 @@ function speakResponse(text, feedback) {
 }
 
 /* ================= Gemini AI Tutor Connector ================= */
-// Use exclusively gemini-3.8-flash (free tier model) with retry on high demand
-const ACTIVE_MODEL = 'gemini-3.8-flash';
+// Flash models in order of preference (Free Tier friendly)
+const FLASH_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-2.0-flash'
+];
+
+async function fetchWithTimeout(url, options, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timeoutId);
+    return res;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
 
 async function callGeminiFast(apiKey, payload) {
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${ACTIVE_MODEL}:generateContent?key=${apiKey}`;
   let lastError = null;
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+  for (const model of FLASH_MODELS) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-      if (response.ok) {
-        return await response.json();
-      }
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        console.log(`Llamando a ${model} (intento ${attempt})...`);
+        const response = await fetchWithTimeout(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }, 5500); // 5.5s timeout to prevent ever freezing
 
-      const errData = await response.json().catch(() => ({}));
-      const errMsg = errData.error?.message || `HTTP ${response.status}`;
-      console.warn(`Intento ${attempt} (${ACTIVE_MODEL}): ${errMsg}`);
-      lastError = new Error(errMsg);
+        if (response.ok) {
+          console.log(`¡Respuesta exitosa de ${model}!`);
+          return await response.json();
+        }
 
-      // If temporary high demand / 503, pause and retry the same flash model
-      if (errMsg.includes('high demand') || errMsg.includes('overloaded') || response.status === 503) {
-        sessionStatus.textContent = "Alta demanda en Google, reintentando...";
-        await new Promise(r => setTimeout(r, 1200));
-        continue;
-      }
+        const errData = await response.json().catch(() => ({}));
+        const errMsg = errData.error?.message || `HTTP ${response.status}`;
+        console.warn(`${model} error:`, errMsg);
+        lastError = new Error(errMsg);
 
-      // If other error, stop retrying
-      break;
-    } catch (networkErr) {
-      lastError = networkErr;
-      if (attempt < 3) {
-        await new Promise(r => setTimeout(r, 1000));
+        // If high demand or 503, pause briefly then try next attempt/model
+        if (errMsg.includes('high demand') || errMsg.includes('overloaded') || response.status === 503) {
+          sessionStatus.textContent = "Google con tráfico alto, probando ruta rápida...";
+          await new Promise(r => setTimeout(r, 800));
+          continue;
+        }
+
+        // If model not found or forbidden, immediately try next model in FLASH_MODELS
+        break;
+      } catch (err) {
+        console.warn(`Timeout o red con ${model}:`, err.message);
+        lastError = err;
       }
     }
   }
 
-  throw lastError || new Error("No se pudo obtener respuesta de Gemini.");
+  throw lastError || new Error("Servidores de Gemini ocupados. Haz clic en HABLAR para reintentar.");
 }
 
 async function processUserInput(userMessage) {
