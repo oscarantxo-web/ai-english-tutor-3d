@@ -553,7 +553,8 @@ YOUR DUAL ROLE:
    - If their sentence was completely natural, fluent, and had no pronunciation traps, set "feedback" to null.
 
 OUTPUT FORMAT:
-Respond strictly in valid JSON without backticks:
+Respond strictly in raw, valid JSON with no introductory text, no pleasantries, and no markdown backticks.
+Never say "Here is the JSON" or similar. Output ONLY the JSON object:
 {
   "reply": "Your spoken English response (1-2 sentences with follow-up question)",
   "feedback": "Concise Spanish tip for grammar, phrasing, or pronunciation (or null)"
@@ -579,13 +580,39 @@ Respond strictly in valid JSON without backticks:
     };
 
     const data = await callGeminiWithFallback(state.apiKey, payload);
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    let parsedResult;
+    // Robust JSON extractor that strips any conversational preamble or markdown fences
+    let parsedResult = null;
     try {
+      // 1. Try direct parse
       parsedResult = JSON.parse(rawText);
     } catch (e) {
-      parsedResult = { reply: rawText, feedback: null };
+      // 2. Try extracting content inside { ... }
+      const firstBrace = rawText.indexOf('{');
+      const lastBrace = rawText.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        const jsonSlice = rawText.substring(firstBrace, lastBrace + 1);
+        try {
+          parsedResult = JSON.parse(jsonSlice);
+        } catch (sliceErr) {
+          console.warn("Could not parse extracted JSON block:", sliceErr);
+        }
+      }
+    }
+
+    // If still null, sanitize raw text to ensure no JSON syntax or preambles are spoken aloud
+    if (!parsedResult || !parsedResult.reply) {
+      let cleanText = rawText
+        .replace(/Here is the (JSON|response)[\s\S]*?:/gi, '')
+        .replace(/```json[\s\S]*?```/gi, '')
+        .replace(/```[\s\S]*?```/gi, '')
+        .replace(/\{[\s\S]*?\}/gi, '')
+        .trim();
+      parsedResult = {
+        reply: cleanText || "Hello! It's great to hear from you. What would you like to talk about?",
+        feedback: null
+      };
     }
 
     // Save assistant reply to history
