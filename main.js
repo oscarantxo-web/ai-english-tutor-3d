@@ -545,20 +545,21 @@ YOUR DUAL ROLE:
      a) Grammar or tense mistakes (e.g., "Yesterday I go" -> "went", "I have 25 years" -> "I am 25").
      b) Phrasing & Naturalness (e.g., saying just "sport" -> encourage "I'm a big fan of sports").
      c) Pronunciation & Phonetics (identify words in their sentence that are tricky for non-native speakers, silent letters, or common phonetic traps like: "comfortable", "schedule", "subtle", "island", "clothes", "vegetable", "doubt", or adding 'e' before 'sp'/'st' words).
-   - If you detect ANY grammar mistake OR identify a tricky word worth coaching on pronunciation, provide a helpful, concise tip in Spanish with easy phonetics in the "feedback" field.
+   - If you detect ANY grammar mistake OR identify a tricky word worth coaching on pronunciation, provide a helpful, concise tip in Spanish with easy phonetics in the [FEEDBACK] section.
      Examples:
-     - 'Gramática: Recuerda usar "went" para el pasado ("Yesterday I went...").'
-     - 'Pronunciación: En "vegetable", la segunda "e" es muda: suena /ˈvɛdʒtəbəl/ ("VEJ-tuh-bul", 3 sílabas, no 4).'
-     - 'Fluidez: En vez de solo "sport", di: "I love sports" o "Let\\'s talk about sports".'
-   - If their sentence was completely natural, fluent, and had no pronunciation traps, set "feedback" to null.
+     - Gramática: Recuerda usar "went" para el pasado ("Yesterday I went...").
+     - Pronunciación: En "vegetable", la segunda "e" es muda: suena /ˈvɛdʒtəbəl/ ("VEJ-tuh-bul", 3 sílabas, no 4).
+     - Fluidez: En vez de solo "sport", di: "I love sports" o "Let's talk about sports".
+   - If their sentence was completely natural, fluent, and had no pronunciation traps, write NONE for [FEEDBACK].
 
 OUTPUT FORMAT:
-Respond strictly in raw, valid JSON with no introductory text, no pleasantries, and no markdown backticks.
-Never say "Here is the JSON" or similar. Output ONLY the JSON object:
-{
-  "reply": "Your spoken English response (1-2 sentences with follow-up question)",
-  "feedback": "Concise Spanish tip for grammar, phrasing, or pronunciation (or null)"
-}`;
+Do NOT output JSON. Do NOT write any introduction or greeting to the system.
+Output strictly using this format:
+
+[REPLY]
+(Write your spoken English response here)
+[FEEDBACK]
+(Write your Spanish tip here, or write NONE)`;
 
   // Add user turn to conversation history
   state.history.push({
@@ -566,63 +567,81 @@ Never say "Here is the JSON" or similar. Output ONLY the JSON object:
     parts: [{ text: userMessage }]
   });
 
+  // Clean any legacy corrupted model messages from history
+  const cleanHistory = state.history.map(item => {
+    if (item.role === 'model') {
+      const cleaned = item.parts[0].text
+        .replace(/Here is the JSON[\s\S]*?:/gi, '')
+        .replace(/```json[\s\S]*?```/gi, '')
+        .trim();
+      return { role: 'model', parts: [{ text: cleaned || "Hi! Let's talk!" }] };
+    }
+    return item;
+  });
+
   try {
     const payload = {
       system_instruction: {
         parts: [{ text: systemInstruction }]
       },
-      contents: state.history.slice(-8), // Last 8 exchanges to keep context fresh and fast
+      contents: cleanHistory.slice(-8), // Last 8 exchanges to keep context fresh and fast
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 250,
-        responseMimeType: "application/json"
+        maxOutputTokens: 250
       }
     };
 
     const data = await callGeminiWithFallback(state.apiKey, payload);
     const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    // Robust JSON extractor that strips any conversational preamble or markdown fences
-    let parsedResult = null;
-    try {
-      // 1. Try direct parse
-      parsedResult = JSON.parse(rawText);
-    } catch (e) {
-      // 2. Try extracting content inside { ... }
-      const firstBrace = rawText.indexOf('{');
-      const lastBrace = rawText.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        const jsonSlice = rawText.substring(firstBrace, lastBrace + 1);
-        try {
-          parsedResult = JSON.parse(jsonSlice);
-        } catch (sliceErr) {
-          console.warn("Could not parse extracted JSON block:", sliceErr);
+    let reply = "";
+    let feedback = null;
+
+    // Parse delimited format [REPLY] ... [FEEDBACK] ...
+    if (rawText.includes('[REPLY]')) {
+      const parts = rawText.split('[FEEDBACK]');
+      reply = parts[0].replace(/.*\[REPLY\]/s, '').trim();
+      if (parts[1]) {
+        const fbCandidate = parts[1].replace(/\[\/FEEDBACK\]/gi, '').trim();
+        if (fbCandidate && !['none', 'null', 'ninguno', 'none.'].includes(fbCandidate.toLowerCase())) {
+          feedback = fbCandidate;
         }
       }
     }
+    // Fallback: If model output JSON anyway
+    else if (rawText.includes('{') && rawText.includes('}')) {
+      try {
+        const sliceStr = rawText.substring(rawText.indexOf('{'), rawText.lastIndexOf('}') + 1);
+        const parsed = JSON.parse(sliceStr);
+        reply = parsed.reply || "";
+        feedback = parsed.feedback || parsed.tip || null;
+      } catch (e) {
+        console.warn("JSON slice fallback error:", e);
+      }
+    }
 
-    // If still null, sanitize raw text to ensure no JSON syntax or preambles are spoken aloud
-    if (!parsedResult || !parsedResult.reply) {
-      let cleanText = rawText
-        .replace(/Here is the (JSON|response)[\s\S]*?:/gi, '')
-        .replace(/```json[\s\S]*?```/gi, '')
-        .replace(/```[\s\S]*?```/gi, '')
-        .replace(/\{[\s\S]*?\}/gi, '')
+    // Final cleanup: remove any leftover robotic phrases
+    if (!reply) {
+      reply = rawText
+        .replace(/^.*?(Here is the|Here's the).*?:\s*/is, '')
+        .replace(/\[\/?(REPLY|FEEDBACK)\]/gi, '')
+        .replace(/```[\s\S]*?```/g, '')
+        .replace(/\{[\s\S]*?\}/g, '')
         .trim();
-      parsedResult = {
-        reply: cleanText || "Hello! It's great to hear from you. What would you like to talk about?",
-        feedback: null
-      };
+    }
+
+    if (!reply) {
+      reply = "That sounds wonderful! Tell me more about that.";
     }
 
     // Save assistant reply to history
     state.history.push({
       role: "model",
-      parts: [{ text: parsedResult.reply }]
+      parts: [{ text: reply }]
     });
 
     state.isGenerating = false;
-    speakResponse(parsedResult.reply, parsedResult.feedback);
+    speakResponse(reply, feedback);
 
   } catch (error) {
     console.error("Gemini Error:", error);
