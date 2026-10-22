@@ -9,6 +9,7 @@ const state = {
   speechRate: parseFloat(localStorage.getItem('tutor_rate') || '1.0'),
   handsFree: localStorage.getItem('tutor_handsfree') === 'true',
   topic: 'casual',
+  level: localStorage.getItem('tutor_level') || 'B1',
   isListening: false,
   isSpeaking: false,
   isGenerating: false,
@@ -49,6 +50,8 @@ const textForm = document.getElementById('text-chat-form');
 const textInput = document.getElementById('text-input');
 const btnReset = document.getElementById('btn-reset');
 const topicDropdown = document.getElementById('topic-dropdown');
+const levelDropdown = document.getElementById('level-dropdown');
+if (levelDropdown) levelDropdown.value = state.level;
 
 const modalSettings = document.getElementById('modal-settings');
 const btnSettings = document.getElementById('btn-settings');
@@ -518,14 +521,24 @@ async function processUserInput(userMessage) {
     business: "A professional business meeting discussion and negotiations."
   };
 
+  // Level Instructions
+  const levelInstructions = {
+    A1: "STUDENT LEVEL: A1 (Beginner). Speak using very simple everyday words and short, clear sentences (maximum 8-10 words). Speak gently, stick to present and basic past, and provide friendly tips in Spanish for any errors.",
+    A2: "STUDENT LEVEL: A2 (Elementary). Speak with simple, clear everyday English. Focus on daily routines, basic past/future, and coach them on fundamental grammar and silent letters.",
+    B1: "STUDENT LEVEL: B1 (Intermediate). Speak naturally at normal conversational speed. Introduce common phrasal verbs, encourage them to express opinions, and coach on natural collocations.",
+    B2: "STUDENT LEVEL: B2 (Upper Intermediate). Speak like a native peer. Use idiomatic expressions, varied vocabulary, and challenge them to explain their reasoning while refining pronunciation subtleties.",
+    C1: "STUDENT LEVEL: C1 (Advanced). Speak with full native sophistication, nuanced idioms, and advanced vocabulary. Focus on subtle stylistic nuances, register, and high-level phonetic rhythm."
+  };
+
   const systemInstruction = `You are Sarah, an attentive, enthusiastic, and patient native English conversation and pronunciation coach in a spoken voice app like Praktica.
+Target student level: ${levelInstructions[state.level] || levelInstructions.B1}
 Current conversation scenario: ${topicContexts[state.topic] || "Casual conversation"}.
 
 YOUR DUAL ROLE:
 1. CONVERSATION PARTNER:
    - Always listen closely and react to what the student said. If they propose a topic or answer your question, acknowledge it enthusiastically!
-   - Keep your spoken reply punchy, natural, and concise (1 to 2 sentences maximum).
-   - Always end with a follow-up question to keep the student talking.
+   - Keep your spoken reply punchy, natural, and concise (1 to 2 sentences maximum, strictly tailored to their CEFR level: ${state.level}).
+   - Always end with an engaging follow-up question suited to their level to keep the student talking.
 
 2. SPEAKING & PRONUNCIATION COACH:
    - Scrutinize what the student said for:
@@ -617,6 +630,22 @@ btnReset.addEventListener('click', () => {
   state.history = [{ role: "model", parts: [{ text: greeting }] }];
   feedbackCard.classList.add('hidden');
   speakResponse(greeting, null);
+});
+
+levelDropdown.addEventListener('change', (e) => {
+  state.level = e.target.value;
+  localStorage.setItem('tutor_level', state.level);
+  feedbackCard.classList.add('hidden');
+  const levelGreetings = {
+    A1: "Hello! Level A1 selected. Let's practice simple English! What is your name or what do you like?",
+    A2: "Hi! Level A2 ready. Let's practice everyday English together. How was your day?",
+    B1: "Great! We are now at level B1. What would you like to talk about today?",
+    B2: "Awesome! Level B2 set. Let's have an engaging discussion. What's on your mind?",
+    C1: "Excellent! Level C1 active. What topic or perspective would you like to explore today?"
+  };
+  const chosenGreeting = levelGreetings[state.level] || "Level updated! What shall we talk about?";
+  state.history = [{ role: "model", parts: [{ text: chosenGreeting }] }];
+  speakResponse(chosenGreeting, null);
 });
 
 topicDropdown.addEventListener('change', (e) => {

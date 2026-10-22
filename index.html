@@ -32,15 +32,28 @@
         </div>
       </div>
 
-      <div class="topic-selector">
-        <span class="topic-label">Tema:</span>
-        <select id="topic-dropdown">
-          <option value="casual">Charla informal cotidiana</option>
-          <option value="interview">Simulación de Entrevista de Trabajo</option>
-          <option value="travel">Viajes, Aeropuertos y Hoteles</option>
-          <option value="restaurant">Pedir en Restaurantes y Cafeterías</option>
-          <option value="business">Reuniones de Negocios</option>
-        </select>
+      <div class="selectors-container">
+        <div class="level-selector">
+          <span class="selector-label">Nivel:</span>
+          <select id="level-dropdown">
+            <option value="A1">A1 - Principiante</option>
+            <option value="A2">A2 - Elemental</option>
+            <option value="B1" selected>B1 - Intermedio</option>
+            <option value="B2">B2 - Intermedio Alto</option>
+            <option value="C1">C1 - Avanzado</option>
+          </select>
+        </div>
+
+        <div class="topic-selector">
+          <span class="selector-label">Tema:</span>
+          <select id="topic-dropdown">
+            <option value="casual">Charla cotidiana</option>
+            <option value="interview">Entrevista de Trabajo</option>
+            <option value="travel">Viajes y Aeropuertos</option>
+            <option value="restaurant">Restaurantes y Cafeterías</option>
+            <option value="business">Reuniones de Negocios</option>
+          </select>
+        </div>
       </div>
 
       <div class="top-actions">
@@ -173,6 +186,6 @@
     </div>
   </div>
 
-  <script type="module" src="main.js?v=4"></script>
+  <script type="module" src="main.js?v=5"></script>
 </body>
 </html>
