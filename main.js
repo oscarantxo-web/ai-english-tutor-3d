@@ -469,44 +469,48 @@ function speakResponse(text, feedback) {
 }
 
 /* ================= Gemini AI Tutor Connector ================= */
-// Target the exact fast model directly to avoid extra network latency
-let preferredModel = 'gemini-3.8-flash';
+// Use exclusively gemini-3.8-flash (free tier model) with retry on high demand
+const ACTIVE_MODEL = 'gemini-3.8-flash';
 
 async function callGeminiFast(apiKey, payload) {
-  // 1. Direct call to the fastest active model
-  const primaryEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${preferredModel}:generateContent?key=${apiKey}`;
-  
-  try {
-    const response = await fetch(primaryEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${ACTIVE_MODEL}:generateContent?key=${apiKey}`;
+  let lastError = null;
 
-    if (response.ok) {
-      return await response.json();
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (response.ok) {
+        return await response.json();
+      }
+
+      const errData = await response.json().catch(() => ({}));
+      const errMsg = errData.error?.message || `HTTP ${response.status}`;
+      console.warn(`Intento ${attempt} (${ACTIVE_MODEL}): ${errMsg}`);
+      lastError = new Error(errMsg);
+
+      // If temporary high demand / 503, pause and retry the same flash model
+      if (errMsg.includes('high demand') || errMsg.includes('overloaded') || response.status === 503) {
+        sessionStatus.textContent = "Alta demanda en Google, reintentando...";
+        await new Promise(r => setTimeout(r, 1200));
+        continue;
+      }
+
+      // If other error, stop retrying
+      break;
+    } catch (networkErr) {
+      lastError = networkErr;
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
     }
-
-    // If 404 or high demand, try pro preview immediately without delay
-    console.warn(`Primary model ${preferredModel} returned ${response.status}, trying fallback...`);
-  } catch (err) {
-    console.warn("Primary call network error, trying fallback...", err);
   }
 
-  // 2. Immediate fallback to gemini-3.1-pro-preview
-  const fallbackEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${apiKey}`;
-  const fbResponse = await fetch(fallbackEndpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-
-  if (fbResponse.ok) {
-    return await fbResponse.json();
-  }
-
-  const errData = await fbResponse.json().catch(() => ({}));
-  throw new Error(errData.error?.message || `HTTP ${fbResponse.status}`);
+  throw lastError || new Error("No se pudo obtener respuesta de Gemini.");
 }
 
 async function processUserInput(userMessage) {
