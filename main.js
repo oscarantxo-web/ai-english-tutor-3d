@@ -315,10 +315,14 @@ function setupSpeechRecognition() {
 }
 
 function startListening() {
-  if (state.isSpeaking) {
+  // Always break out of speaking state on user intent
+  try {
     window.speechSynthesis.cancel();
-    state.isSpeaking = false;
-  }
+  } catch (e) {}
+  state.isSpeaking = false;
+  talkIntensity = 0;
+  if (speakingIndicator) speakingIndicator.classList.add('hidden');
+
   if (!recognition) {
     alert("Tu navegador no soporta reconocimiento de voz. Usa Google Chrome o Microsoft Edge.");
     return;
@@ -326,7 +330,7 @@ function startListening() {
   try {
     recognition.start();
   } catch (e) {
-    console.warn(e);
+    console.warn("Recognition start warning:", e);
   }
 }
 
@@ -340,6 +344,8 @@ function stopListening() {
 }
 
 /* ================= Speech Synthesis (TTS) ================= */
+let currentUtterance = null; // Global reference to prevent Chrome Garbage Collection bug
+
 function populateVoices() {
   const voices = window.speechSynthesis.getVoices();
   voiceSelect.innerHTML = '';
@@ -369,36 +375,43 @@ function speakResponse(text, feedback) {
     return;
   }
 
-  window.speechSynthesis.cancel(); // Stop any pending speech
+  // Workaround for Chrome SpeechSynthesis freeze
+  try {
+    window.speechSynthesis.cancel();
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+    }
+  } catch (e) {
+    console.warn("SpeechSynthesis reset error:", e);
+  }
 
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = 'en-US';
-  utterance.rate = state.speechRate;
+  currentUtterance = new SpeechSynthesisUtterance(text);
+  currentUtterance.lang = 'en-US';
+  currentUtterance.rate = state.speechRate;
 
   const voices = window.speechSynthesis.getVoices();
   const chosenVoice = voices.find(v => v.name === voiceSelect.value) ||
                       voices.find(v => v.lang.startsWith('en')) || voices[0];
-  if (chosenVoice) utterance.voice = chosenVoice;
+  if (chosenVoice) currentUtterance.voice = chosenVoice;
 
-  utterance.onstart = () => {
+  currentUtterance.onstart = () => {
     state.isSpeaking = true;
     talkIntensity = 0.85;
     speakingIndicator.classList.remove('hidden');
     sessionStatus.textContent = "Sarah está hablando...";
   };
 
-  utterance.onboundary = (event) => {
-    // Pulse intensity on every word boundary
+  currentUtterance.onboundary = (event) => {
     talkIntensity = 0.9;
   };
 
-  utterance.onend = () => {
+  currentUtterance.onend = () => {
     state.isSpeaking = false;
     talkIntensity = 0;
     speakingIndicator.classList.add('hidden');
     sessionStatus.textContent = "Lista para conversar";
+    currentUtterance = null;
 
-    // Hands-free mode: auto start listening after Sarah finishes
     if (state.handsFree) {
       setTimeout(() => {
         if (!state.isSpeaking && !state.isGenerating) {
@@ -408,10 +421,13 @@ function speakResponse(text, feedback) {
     }
   };
 
-  utterance.onerror = () => {
+  currentUtterance.onerror = (e) => {
+    console.warn("SpeechSynthesis error:", e);
     state.isSpeaking = false;
     talkIntensity = 0;
     speakingIndicator.classList.add('hidden');
+    sessionStatus.textContent = "Lista para conversar";
+    currentUtterance = null;
   };
 
   tutorText.textContent = text;
@@ -424,7 +440,19 @@ function speakResponse(text, feedback) {
     feedbackCard.classList.add('hidden');
   }
 
-  window.speechSynthesis.speak(utterance);
+  window.speechSynthesis.speak(currentUtterance);
+
+  // Safety Watchdog: If browser speech gets stuck, automatically unlock the app
+  const approxDurationMs = Math.max(3000, (text.split(' ').length / 1.5) * 1000 + 2500);
+  setTimeout(() => {
+    if (state.isSpeaking) {
+      console.log("Watchdog: resetting speech state to prevent app freezing.");
+      state.isSpeaking = false;
+      talkIntensity = 0;
+      speakingIndicator.classList.add('hidden');
+      sessionStatus.textContent = "Lista para conversar";
+    }
+  }, approxDurationMs);
 }
 
 /* ================= Gemini AI Tutor Connector ================= */
@@ -530,36 +558,23 @@ async function processUserInput(userMessage) {
     C1: "STUDENT LEVEL: C1 (Advanced). Speak with full native sophistication, nuanced idioms, and advanced vocabulary. Focus on subtle stylistic nuances, register, and high-level phonetic rhythm."
   };
 
-  const systemInstruction = `You are Sarah, an attentive, enthusiastic, and patient native English conversation and pronunciation coach in a spoken voice app like Praktica.
+  const systemInstruction = `You are Sarah, a warm, patient, and highly engaging native English tutor.
 Target student level: ${levelInstructions[state.level] || levelInstructions.B1}
-Current conversation scenario: ${topicContexts[state.topic] || "Casual conversation"}.
+Current scenario: ${topicContexts[state.topic] || "Casual conversation"}.
 
-YOUR DUAL ROLE:
-1. CONVERSATION PARTNER:
-   - Always listen closely and react to what the student said. If they propose a topic or answer your question, acknowledge it enthusiastically!
-   - Keep your spoken reply punchy, natural, and concise (1 to 2 sentences maximum, strictly tailored to their CEFR level: ${state.level}).
-   - Always end with an engaging follow-up question suited to their level to keep the student talking.
-
-2. SPEAKING & PRONUNCIATION COACH:
-   - Scrutinize what the student said for:
-     a) Grammar or tense mistakes (e.g., "Yesterday I go" -> "went", "I have 25 years" -> "I am 25").
-     b) Phrasing & Naturalness (e.g., saying just "sport" -> encourage "I'm a big fan of sports").
-     c) Pronunciation & Phonetics (identify words in their sentence that are tricky for non-native speakers, silent letters, or common phonetic traps like: "comfortable", "schedule", "subtle", "island", "clothes", "vegetable", "doubt", or adding 'e' before 'sp'/'st' words).
-   - If you detect ANY grammar mistake OR identify a tricky word worth coaching on pronunciation, provide a helpful, concise tip in Spanish with easy phonetics in the [FEEDBACK] section.
-     Examples:
-     - Gramática: Recuerda usar "went" para el pasado ("Yesterday I went...").
-     - Pronunciación: En "vegetable", la segunda "e" es muda: suena /ˈvɛdʒtəbəl/ ("VEJ-tuh-bul", 3 sílabas, no 4).
-     - Fluidez: En vez de solo "sport", di: "I love sports" o "Let's talk about sports".
-   - If their sentence was completely natural, fluent, and had no pronunciation traps, write NONE for [FEEDBACK].
+CRITICAL RULES:
+1. ALWAYS respond in 1 to 2 complete, natural, friendly conversational sentences acknowledging what the student said and asking a follow-up question.
+2. NEVER EVER answer with just a single word (like "Sports" or "Yes"). You MUST formulate a full spoken answer!
+3. If the student made any grammar, vocabulary, or pronunciation mistake, add a helpful tip in Spanish.
 
 OUTPUT FORMAT:
-Do NOT output JSON. Do NOT write any introduction or greeting to the system.
-Output strictly using this format:
+Reply: (Write your 1-2 sentence spoken English response here)
+Tip: (Write your short Spanish tip here, or write NONE)
 
-[REPLY]
-(Write your spoken English response here)
-[FEEDBACK]
-(Write your Spanish tip here, or write NONE)`;
+FEW-SHOT EXAMPLE:
+Student: "I would like talking about sports"
+Reply: Sports are fantastic! Do you prefer playing soccer or watching basketball on weekends?
+Tip: Gramática: Se dice "I would like to talk about" (con "to talk", no "talking").`;
 
   // Add user turn to conversation history
   state.history.push({
@@ -593,45 +608,41 @@ Output strictly using this format:
 
     const data = await callGeminiWithFallback(state.apiKey, payload);
     const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    console.log("Gemini Raw Response:", rawText);
 
     let reply = "";
     let feedback = null;
 
-    // Parse delimited format [REPLY] ... [FEEDBACK] ...
-    if (rawText.includes('[REPLY]')) {
-      const parts = rawText.split('[FEEDBACK]');
-      reply = parts[0].replace(/.*\[REPLY\]/s, '').trim();
-      if (parts[1]) {
-        const fbCandidate = parts[1].replace(/\[\/FEEDBACK\]/gi, '').trim();
-        if (fbCandidate && !['none', 'null', 'ninguno', 'none.'].includes(fbCandidate.toLowerCase())) {
-          feedback = fbCandidate;
+    // Line-by-line parser for Reply: and Tip:
+    const lines = rawText.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (/^reply:\s*/i.test(trimmed)) {
+        reply = trimmed.replace(/^reply:\s*/i, '').trim();
+      } else if (/^(tip|feedback):\s*/i.test(trimmed)) {
+        const candidate = trimmed.replace(/^(tip|feedback):\s*/i, '').trim();
+        if (candidate && !['none', 'null', 'ninguno', 'none.'].includes(candidate.toLowerCase())) {
+          feedback = candidate;
         }
       }
     }
-    // Fallback: If model output JSON anyway
-    else if (rawText.includes('{') && rawText.includes('}')) {
-      try {
-        const sliceStr = rawText.substring(rawText.indexOf('{'), rawText.lastIndexOf('}') + 1);
-        const parsed = JSON.parse(sliceStr);
-        reply = parsed.reply || "";
-        feedback = parsed.feedback || parsed.tip || null;
-      } catch (e) {
-        console.warn("JSON slice fallback error:", e);
+
+    // Fallback: If no Reply: prefix was used
+    if (!reply) {
+      const parts = rawText.split(/(?:^|\n)(?:Tip|Feedback):/i);
+      reply = parts[0].replace(/^(?:Reply|Sarah):/i, '').trim();
+      if (parts[1]) {
+        const candidate = parts[1].trim();
+        if (candidate && !['none', 'null', 'ninguno', 'none.'].includes(candidate.toLowerCase())) {
+          feedback = candidate;
+        }
       }
     }
 
-    // Final cleanup: remove any leftover robotic phrases
-    if (!reply) {
-      reply = rawText
-        .replace(/^.*?(Here is the|Here's the).*?:\s*/is, '')
-        .replace(/\[\/?(REPLY|FEEDBACK)\]/gi, '')
-        .replace(/```[\s\S]*?```/g, '')
-        .replace(/\{[\s\S]*?\}/g, '')
-        .trim();
-    }
-
-    if (!reply) {
-      reply = "That sounds wonderful! Tell me more about that.";
+    // Safety check: if response is just a single word (like "Sports"), expand into a proper greeting/response
+    if (!reply || reply.split(/\s+/).length < 2) {
+      const topicWord = reply || "that";
+      reply = `Talking about ${topicWord} sounds great! What do you enjoy most about it?`;
     }
 
     // Save assistant reply to history
