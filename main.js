@@ -263,6 +263,8 @@ function animate(time) {
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
 
+let currentSpokenText = '';
+
 function setupSpeechRecognition() {
   if (!SpeechRecognition) {
     btnMic.title = "Reconocimiento de voz no soportado en este navegador. Usa Chrome o Edge.";
@@ -277,6 +279,7 @@ function setupSpeechRecognition() {
 
   recognition.onstart = () => {
     state.isListening = true;
+    currentSpokenText = '';
     btnMic.classList.add('recording');
     transcriptContainer.classList.remove('hidden');
     transcriptText.textContent = "Listening to your English...";
@@ -295,22 +298,32 @@ function setupSpeechRecognition() {
       }
     }
 
-    transcriptText.textContent = final || interim || "...";
+    currentSpokenText = final || interim || currentSpokenText;
+    transcriptText.textContent = currentSpokenText || "...";
 
     if (final.trim().length > 0) {
+      const textToSend = final.trim();
       stopListening();
-      processUserInput(final.trim());
+      processUserInput(textToSend);
     }
   };
 
   recognition.onerror = (event) => {
     console.error("Speech Recognition Error:", event.error);
     stopListening();
-    sessionStatus.textContent = "Listo para conversar";
+    sessionStatus.textContent = "Lista para conversar";
   };
 
   recognition.onend = () => {
-    stopListening();
+    // If stopped and we had spoken text that wasn't finalized yet, process it immediately!
+    if (currentSpokenText.trim().length > 0 && !state.isGenerating && !state.isSpeaking) {
+      const textToSend = currentSpokenText.trim();
+      currentSpokenText = '';
+      stopListening();
+      processUserInput(textToSend);
+    } else {
+      stopListening();
+    }
   };
 }
 
@@ -456,78 +469,44 @@ function speakResponse(text, feedback) {
 }
 
 /* ================= Gemini AI Tutor Connector ================= */
-let cachedValidModels = null;
+// Target the exact fast model directly to avoid extra network latency
+let preferredModel = 'gemini-3.8-flash';
 
-async function getSupportedModels(apiKey) {
-  if (cachedValidModels && cachedValidModels.length > 0) {
-    return cachedValidModels;
-  }
-
+async function callGeminiFast(apiKey, payload) {
+  // 1. Direct call to the fastest active model
+  const primaryEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${preferredModel}:generateContent?key=${apiKey}`;
+  
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-    if (res.ok) {
-      const data = await res.json();
-      const models = (data.models || [])
-        .filter(m => m.supportedGenerationMethods && m.supportedGenerationMethods.includes('generateContent'))
-        .map(m => m.name.replace('models/', ''));
+    const response = await fetch(primaryEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
 
-      console.log("Modelos habilitados en tu cuenta:", models);
-
-      if (models.length > 0) {
-        // Prioritize flash models first, then pro, then others
-        models.sort((a, b) => {
-          const aFlash = a.includes('flash') ? -1 : 1;
-          const bFlash = b.includes('flash') ? -1 : 1;
-          return aFlash - bFlash;
-        });
-
-        cachedValidModels = models;
-        return cachedValidModels;
-      }
+    if (response.ok) {
+      return await response.json();
     }
-  } catch (e) {
-    console.warn("No se pudo listar modelos dinámicamente:", e);
+
+    // If 404 or high demand, try pro preview immediately without delay
+    console.warn(`Primary model ${preferredModel} returned ${response.status}, trying fallback...`);
+  } catch (err) {
+    console.warn("Primary call network error, trying fallback...", err);
   }
 
-  return ['gemini-3.8-flash', 'gemini-3.1-pro-preview'];
-}
+  // 2. Immediate fallback to gemini-3.1-pro-preview
+  const fallbackEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${apiKey}`;
+  const fbResponse = await fetch(fallbackEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
 
-async function callGeminiWithFallback(apiKey, payload) {
-  const models = await getSupportedModels(apiKey);
-  let lastError = null;
-
-  for (const model of models) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    
-    try {
-      console.log(`Intentando llamada con modelo: ${model}...`);
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        console.log(`¡Éxito con modelo ${model}!`);
-        return data;
-      }
-
-      const errData = await response.json().catch(() => ({}));
-      const errMsg = errData.error?.message || `HTTP ${response.status}`;
-      console.warn(`Modelo ${model} no disponible: ${errMsg}`);
-      lastError = new Error(errMsg);
-
-      // If high demand, wait a moment before trying the next model
-      if (errMsg.includes('high demand') || errMsg.includes('overloaded') || response.status === 503) {
-        await new Promise(r => setTimeout(r, 600));
-      }
-    } catch (networkErr) {
-      lastError = networkErr;
-    }
+  if (fbResponse.ok) {
+    return await fbResponse.json();
   }
 
-  throw lastError || new Error("No se pudo conectar con ningún modelo de Gemini.");
+  const errData = await fbResponse.json().catch(() => ({}));
+  throw new Error(errData.error?.message || `HTTP ${fbResponse.status}`);
 }
 
 async function processUserInput(userMessage) {
@@ -599,14 +578,16 @@ Tip: Gramática: Se dice "I would like to talk about" (con "to talk", no "talkin
       system_instruction: {
         parts: [{ text: systemInstruction }]
       },
-      contents: cleanHistory.slice(-8), // Last 8 exchanges to keep context fresh and fast
+      contents: cleanHistory.slice(-4), // Keep last 4 messages for ultra-fast processing
       generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 250
+        temperature: 0.6,
+        maxOutputTokens: 120 // Short punchy replies generate 3x faster
       }
     };
 
-    const data = await callGeminiWithFallback(state.apiKey, payload);
+    const startTime = performance.now();
+    const data = await callGeminiFast(state.apiKey, payload);
+    console.log(`Gemini response received in ${(performance.now() - startTime).toFixed(0)}ms`);
     const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
     console.log("Gemini Raw Response:", rawText);
 
